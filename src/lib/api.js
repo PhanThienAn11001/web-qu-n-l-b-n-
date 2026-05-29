@@ -1,8 +1,10 @@
+const API_URL = 'https://ang-xce6.onrender.com';
+
 const jsonHeaders = { 'Content-Type': 'application/json' };
 
 async function request(path, options = {}) {
   const token = localStorage.getItem('kho-viet-token');
-  const response = await fetch(`/api${path}`, {
+  const response = await fetch(`${API_URL}/api${path}`, {
     headers: {
       ...jsonHeaders,
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
