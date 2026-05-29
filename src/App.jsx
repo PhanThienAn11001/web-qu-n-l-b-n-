@@ -131,7 +131,7 @@ function App() {
   const [loading, setLoading] = useState(Boolean(localStorage.getItem('kho-viet-token')));
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [loginForm, setLoginForm] = useState({ name: 'admin', password: 'admin123' });
+  const [loginForm, setLoginForm] = useState({ name: '', password: '' });
   const [importForm, setImportForm] = useState(formDefaults);
   const [exportForm, setExportForm] = useState(formDefaults);
   const [cancelForm, setCancelForm] = useState(formDefaults);
