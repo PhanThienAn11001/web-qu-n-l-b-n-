@@ -10,8 +10,12 @@ const sheetNames = ['Products', 'Shops', 'Distributions', 'Users', 'ActivityLogs
 
 export function createRepository() {
   if (hasGoogleSheetsConfig()) {
+    console.log('USING GOOGLE SHEETS');
     return new GoogleSheetsRepository();
   }
+
+  console.log('USING LOCAL JSON FILE');
+
   return new FileRepository(dataPath);
 }
 
@@ -20,13 +24,19 @@ class FileRepository {
     this.filePath = filePath;
   }
 
-  async read() {
+ async read() {
+  console.log('READING GOOGLE SHEETS');
+
+  await this.ensureInitialized();
     await this.ensureFile();
     const raw = await fs.readFile(this.filePath, 'utf8');
     return JSON.parse(raw);
   }
-
   async write(data) {
+  console.log('WRITING GOOGLE SHEETS');
+
+  await this.ensureInitialized();
+  
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
     await fs.writeFile(this.filePath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
   }
@@ -54,24 +64,19 @@ class GoogleSheetsRepository {
   }
 
   async read() {
-    await this.ensureInitialized();
-    const [products, shops, distributions, users, activityLogs] = await Promise.all(
-      sheetNames.map((name) => this.readSheet(name)),
-    );
+  await this.ensureInitialized();
+  const [products, shops, distributions, users, activityLogs] = await Promise.all(
+    sheetNames.map((name) => this.readSheet(name)),
+  );
 
-    if ([products, shops, distributions, users, activityLogs].every((rows) => rows.length === 0)) {
-      await this.write(seedData);
-      return cloneData(seedData);
-    }
-
-    return {
-      products: products.map(parseProduct),
-      shops,
-      distributions: distributions.map(parseDistribution),
-      users,
-      activityLogs: activityLogs.map(parseActivityLog),
-    };
-  }
+  return {
+    products: products.map(parseProduct),
+    shops,
+    distributions: distributions.map(parseDistribution),
+    users,
+    activityLogs: activityLogs.map(parseActivityLog),
+  };
+}
 
   async write(data) {
     await this.ensureInitialized();
