@@ -46,7 +46,7 @@ app.get('/api/dashboard', requireAuth, asyncHandler(async (request, response) =>
   const products = state.products.map((product) => enrichProduct(product, state.distributions, state.activityLogs));
   const stats = {
     totalActualStock: products.reduce((sum, product) => sum + product.actualStock, 0),
-    totalShopStock: products.reduce((sum, product) => sum + product.distributedStock, 0),
+    totalShopStock: products.reduce((sum, product) => sum + Object.values(product.exportedByShop || {}).reduce((shopSum, quantity) => shopSum + Number(quantity || 0), 0), 0),
     lowStockCount: products.filter((product) => product.actualStock <= product.lowStockThreshold).length,
     shopCount: state.shops.length,
   };
@@ -56,6 +56,7 @@ app.get('/api/dashboard', requireAuth, asyncHandler(async (request, response) =>
     products,
     shops: state.shops,
     distributions: state.distributions,
+    salesStats: buildSalesStats(state),
     users: isAdmin ? state.users.map(sanitizeUser) : [],
     activityLogs: isAdmin
       ? state.activityLogs.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
@@ -91,19 +92,6 @@ app.post('/api/inventory/import', requireAuth, asyncHandler(async (request, resp
   product.unfixableDefects = Number(product.unfixableDefects || 0) + payload.unfixableDefects;
   if (payload.image) product.image = payload.image;
 
-  const totalAllocated = payload.shopAllocations.reduce((sum, allocation) => sum + allocation.quantity, 0);
-  const importedActualStock = payload.quantity - payload.factoryReturnDefects - payload.unfixableDefects;
-
-  if (totalAllocated > importedActualStock) {
-    throw badRequest('Tổng số lượng phân bổ cho shop phải bằng tổng sản phẩm thực tế');
-  }
-
-  payload.shopAllocations.forEach((allocation) => {
-    findShop(state, allocation.shopId);
-    const distribution = getDistribution(state, product.id, allocation.shopId);
-    distribution.quantity += allocation.quantity;
-  });
-
   await addLog(
     state,
     request.user,
@@ -116,8 +104,6 @@ app.post('/api/inventory/import', requireAuth, asyncHandler(async (request, resp
       sku: product.sku,
       size: product.size || payload.size,
       quantity: payload.quantity,
-      shopIds: payload.shopAllocations.map((allocation) => allocation.shopId),
-      shopAllocations: payload.shopAllocations,
       image: product.image || '',
     },
   );
@@ -152,17 +138,11 @@ app.post('/api/inventory/export', requireAuth, asyncHandler(async (request, resp
   const state = request.state;
   const product = findProduct(state, payload.productId);
   const shop = findShop(state, payload.shopId);
-  const distribution = getDistribution(state, product.id, shop.id);
-
-  if (payload.quantity > distribution.quantity) {
-    throw badRequest('Số lượng xuất không được vượt quá tồn tại cửa hàng');
-  }
 
   if (payload.quantity > calculateActualStock(product)) {
     throw badRequest('Số lượng xuất không được vượt quá tồn kho thực tế');
   }
 
-  distribution.quantity -= payload.quantity;
   product.totalExported = Number(product.totalExported || 0) + payload.quantity;
   await addLog(state, request.user, 'Xuất', `${request.user.name} xuất ${payload.quantity} sản phẩm ${product.name} tại ${shop.name}. ${payload.note}`, {
     type: 'export',
@@ -177,7 +157,7 @@ app.post('/api/inventory/export', requireAuth, asyncHandler(async (request, resp
   });
   await repository.write(state);
 
-  response.status(201).json({ message: 'Đã ghi nhận xuất', distribution });
+  response.status(201).json({ message: 'Đã ghi nhận xuất' });
 }));
 
 
@@ -186,14 +166,12 @@ app.post('/api/inventory/cancel-export', requireAuth, asyncHandler(async (reques
   const state = request.state;
   const product = findProduct(state, payload.productId);
   const shop = findShop(state, payload.shopId);
-  const distribution = getDistribution(state, product.id, shop.id);
   const netExported = calculateNetExportedForShop(state, product.id, shop.id);
 
   if (payload.quantity > netExported) {
     throw badRequest('Số lượng hủy xuất không được lớn hơn số lượng đã xuất trước đó');
   }
 
-  distribution.quantity += payload.quantity;
   product.totalExported = Math.max(Number(product.totalExported || 0) - payload.quantity, 0);
   await addLog(state, request.user, 'Hủy xuất', `${request.user.name} hủy xuất ${payload.quantity} sản phẩm ${product.name} tại ${shop.name}. ${payload.note}`, {
     type: 'cancel-export',
@@ -208,7 +186,7 @@ app.post('/api/inventory/cancel-export', requireAuth, asyncHandler(async (reques
   });
   await repository.write(state);
 
-  response.status(201).json({ message: 'Đã ghi nhận hủy xuất', distribution });
+  response.status(201).json({ message: 'Đã ghi nhận hủy xuất' });
 }));
 
 app.put('/api/products/:id/image', requireAuth, asyncHandler(async (request, response) => {
@@ -307,13 +285,11 @@ app.delete('/api/shops/:id', requireAuth, requireAdmin, asyncHandler(async (requ
   const state = request.state;
   const shop = findShop(state, request.params.id);
 
-  const hasStock = state.distributions.some(
-  (item) => item.shopId === shop.id && Number(item.quantity || 0) > 0
-);
+  const hasSales = state.products.some((product) => calculateNetExportedForShop(state, product.id, shop.id) > 0);
 
-if (hasStock) {
-  throw badRequest('Không thể xóa shop còn tồn kho');
-}
+  if (hasSales) {
+    throw badRequest('Không thể xóa shop còn số lượng đã bán');
+  }
   state.shops = state.shops.filter((item) => item.id !== shop.id);
   state.distributions = state.distributions.filter((item) => item.shopId !== shop.id);
   await addLog(state, request.user, 'Xóa shop', `Xóa shop ${shop.name}.`);
@@ -454,14 +430,6 @@ function parseImportPayload(body) {
   const factoryReturnDefects = toNonNegativeInteger(body.factoryReturnDefects);
   const unfixableDefects = toNonNegativeInteger(body.unfixableDefects);
   const image = sanitizeImage(body.image);
-  const shopAllocations = Array.isArray(body.shopAllocations)
-    ? body.shopAllocations
-        .map((allocation) => ({
-          shopId: sanitizeText(allocation.shopId),
-          quantity: toNonNegativeInteger(allocation.quantity),
-        }))
-        .filter((allocation) => allocation.shopId && allocation.quantity > 0)
-    : [];
 
   if (!productId && !productName) throw badRequest('Vui lòng nhập tên sản phẩm');
   if (!quantity) throw badRequest('Số lượng phải là số nguyên dương');
@@ -479,7 +447,6 @@ function parseImportPayload(body) {
     factoryReturnDefects,
     unfixableDefects,
     image,
-    shopAllocations,
   };
 }
 
@@ -598,13 +565,104 @@ function createProductSku(name, sequence) {
 function enrichProduct(product, distributions, activityLogs = []) {
   const actualStock = calculateActualStock(product);
   const distributedStock = calculateDistributedStock(product.id, distributions);
+  const exportedByShop = calculateNetExportedByShop(activityLogs, product.id);
   return {
     ...product,
     actualStock,
     distributedStock,
     availableForDistribution: Math.max(actualStock - distributedStock, 0),
-    exportedByShop: calculateNetExportedByShop(activityLogs, product.id),
+    exportedByShop,
+    soldStock: Object.values(exportedByShop).reduce((sum, quantity) => sum + Number(quantity || 0), 0),
     allocations: distributions.filter((distribution) => distribution.productId === product.id && Number(distribution.quantity || 0) > 0),
+  };
+}
+
+function buildSalesStats(state) {
+  const productMap = new Map(state.products.map((product) => [product.id, product]));
+  const shopMap = new Map(state.shops.map((shop) => [shop.id, shop]));
+  const productTotals = new Map();
+  const shopTotals = new Map();
+  const shopProducts = new Map();
+  const events = [];
+
+  state.activityLogs.forEach((log) => {
+    const metadata = log.metadata || {};
+    if (!['export', 'cancel-export'].includes(metadata.type) || !metadata.productId || !metadata.shopId) return;
+
+    const product = productMap.get(metadata.productId);
+    const shop = shopMap.get(metadata.shopId);
+    const quantity = Number(metadata.quantity || 0);
+    if (!product || !shop || !quantity) return;
+
+    const signedQuantity = metadata.type === 'cancel-export' ? -quantity : quantity;
+    productTotals.set(product.id, (productTotals.get(product.id) || 0) + signedQuantity);
+    shopTotals.set(shop.id, (shopTotals.get(shop.id) || 0) + signedQuantity);
+
+    const productTotalsForShop = shopProducts.get(shop.id) || new Map();
+    productTotalsForShop.set(product.id, (productTotalsForShop.get(product.id) || 0) + signedQuantity);
+    shopProducts.set(shop.id, productTotalsForShop);
+
+    events.push({
+      id: log.id,
+      productId: product.id,
+      productName: product.name,
+      sku: product.sku,
+      size: product.size || '',
+      shopId: shop.id,
+      shopName: shop.name,
+      quantity: signedQuantity,
+      createdAt: log.createdAt,
+    });
+  });
+
+  const productRankings = [...productTotals.entries()]
+    .filter(([, quantity]) => quantity > 0)
+    .map(([productId, quantity]) => {
+      const product = productMap.get(productId);
+      return {
+        productId,
+        productName: product?.name || '',
+        sku: product?.sku || '',
+        size: product?.size || '',
+        image: product?.image || '',
+        quantity,
+      };
+    })
+    .sort((a, b) => b.quantity - a.quantity || a.productName.localeCompare(b.productName, 'vi', { sensitivity: 'base' }));
+
+  const shopRankings = [...shopTotals.entries()]
+    .filter(([, quantity]) => quantity > 0)
+    .map(([shopId, quantity]) => {
+      const shop = shopMap.get(shopId);
+      const products = [...(shopProducts.get(shopId) || new Map()).entries()]
+        .filter(([, productQuantity]) => productQuantity > 0)
+        .map(([productId, productQuantity]) => {
+          const product = productMap.get(productId);
+          return {
+            productId,
+            productName: product?.name || '',
+            sku: product?.sku || '',
+            size: product?.size || '',
+            image: product?.image || '',
+            quantity: productQuantity,
+          };
+        })
+        .sort((a, b) => b.quantity - a.quantity || a.productName.localeCompare(b.productName, 'vi', { sensitivity: 'base' }));
+
+      return {
+        shopId,
+        shopName: shop?.name || '',
+        image: shop?.image || '',
+        quantity,
+        products,
+      };
+    })
+    .sort((a, b) => b.quantity - a.quantity || a.shopName.localeCompare(b.shopName, 'vi', { sensitivity: 'base' }));
+
+  return {
+    productRankings,
+    shopRankings,
+    events: events.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt)),
   };
 }
 

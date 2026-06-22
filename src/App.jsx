@@ -3,6 +3,7 @@ import {
   Activity,
   ArrowDownToLine,
   ArrowUpFromLine,
+  BarChart3,
   Boxes,
   CalendarDays,
   ChevronDown,
@@ -33,7 +34,6 @@ import {
   createUser,
   deleteProduct,
   deleteShop,
-  deleteShopProduct,
   deleteUser,
   exportStock,
   getDashboard,
@@ -48,6 +48,7 @@ import {
 const sectionConfig = {
   overview: { label: 'Tổng quan', icon: LayoutDashboard },
   inventory: { label: 'Tồn kho', icon: Boxes },
+  statistics: { label: 'Thống kê', icon: BarChart3 },
   shops: { label: 'Shop', icon: Store, adminOnly: true },
   logs: { label: 'Nhật ký', icon: Activity, adminOnly: true },
   users: { label: 'Tài khoản', icon: ShieldCheck, adminOnly: true },
@@ -65,8 +66,6 @@ const formDefaults = {
   fixableDefects: '',
   factoryReturnDefects: '',
   unfixableDefects: '',
-  shopAllocations: {},
-  selectedShops: {},
 };
 
 const shopDefaults = { id: '', name: '', image: '' };
@@ -113,10 +112,10 @@ function findProductOption(products, value) {
 
 function getShopsWithProduct(product, shops, mode = 'stock') {
   if (!product) return [];
+  if (mode === 'stock') return Number(product.actualStock || 0) > 0 ? shops : [];
   return shops.filter((shop) => {
-    const hasStock = (product.allocations || []).some((allocation) => allocation.shopId === shop.id && allocation.quantity > 0);
-    if (mode === 'cancel') return hasStock || Number(product.exportedByShop?.[shop.id] || 0) > 0;
-    return hasStock;
+    if (mode === 'cancel') return Number(product.exportedByShop?.[shop.id] || 0) > 0;
+    return true;
   });
 }
 
@@ -213,9 +212,6 @@ function App() {
       fixableDefects: Number(importForm.fixableDefects || 0),
       factoryReturnDefects: Number(importForm.factoryReturnDefects || 0),
       unfixableDefects: Number(importForm.unfixableDefects || 0),
-      shopAllocations: Object.entries(importForm.selectedShops || {})
-        .filter(([, selected]) => selected)
-        .map(([shopId]) => ({ shopId, quantity: Number(importForm.shopAllocations?.[shopId] || 0) })),
     };
     return runAction(() => importStock(payload), () => setImportForm(formDefaults), 'Đã ghi nhận nhập kho');
   }
@@ -263,13 +259,8 @@ function App() {
   }
 
   async function removeShop(shop) {
-    if (!window.confirm(`Xóa ${shop.name}? Tồn phân bổ của shop này cũng sẽ bị xóa.`)) return;
+    if (!window.confirm(`Xóa ${shop.name}?`)) return;
     await runAction(() => deleteShop(shop.id), () => {}, '');
-  }
-
-  async function removeProductFromShop(shop, product) {
-    if (!window.confirm(`Xóa ${product.name} khỏi ${shop.name}?`)) return;
-    await runAction(() => deleteShopProduct(shop.id, product.id), () => {}, 'Đã xóa sản phẩm khỏi shop');
   }
 
   async function saveUser(event) {
@@ -291,6 +282,7 @@ function App() {
   }
 
   const stats = dashboard?.stats || { totalActualStock: 0, totalShopStock: 0, shopCount: 0 };
+  const salesStats = dashboard?.salesStats || { productRankings: [], shopRankings: [], events: [] };
 
   if (!currentUser) {
     return (
@@ -382,7 +374,7 @@ function App() {
             <>
               <section className="grid gap-4 sm:grid-cols-3">
                 <StatCard icon={PackageCheck} label="Tồn thực tế" value={formatNumber(stats.totalActualStock)} />
-                <StatCard icon={Store} label="Hàng tồn tại các shop" value={formatNumber(stats.totalShopStock)} />
+                <StatCard icon={Store} label="Shop đã bán" value={formatNumber(stats.totalShopStock)} />
                 <StatCard icon={Warehouse} label="Số shop" value={formatNumber(stats.shopCount)} />
               </section>
 
@@ -402,11 +394,12 @@ function App() {
           {activeSection === 'inventory' && (
             <InventoryTable loading={loading} products={filteredProducts} shops={shops} query={query} setQuery={setQuery} isAdmin={isAdmin} onSaveImage={saveProductImage} onDelete={removeProduct} />
           )}
-          {activeSection === 'shops' && isAdmin && <ShopManager shops={shops} products={products} form={shopForm} setForm={setShopForm} onSave={saveShop} onDelete={removeShop} onRemoveProduct={removeProductFromShop} />}
+          {activeSection === 'statistics' && <SalesStatsPage salesStats={salesStats} shops={shops} />}
+          {activeSection === 'shops' && isAdmin && <ShopManager shops={shops} products={products} form={shopForm} setForm={setShopForm} onSave={saveShop} onDelete={removeShop} />}
           {activeSection === 'logs' && isAdmin && <LogsPage logs={logs} shops={shops} products={products} />}
           {activeSection === 'users' && isAdmin && <UserManager users={users} currentUser={currentUser} form={userForm} setForm={setUserForm} onSave={saveUser} onDelete={removeUser} />}
 
-          <ImportStockPanel products={products} shops={shops} values={importForm} setValues={setImportForm} open={importPanelOpen} setOpen={setImportPanelOpen} onSubmit={submitImportStock} />
+          <ImportStockPanel products={products} values={importForm} setValues={setImportForm} open={importPanelOpen} setOpen={setImportPanelOpen} onSubmit={submitImportStock} />
           <InventoryActionModal title="Xuất" icon={ArrowUpFromLine} productLabel="Xuất sản phẩm nào" mode="stock" products={products} shops={shops} values={exportForm} setValues={setExportForm} open={exportPanelOpen} setOpen={setExportPanelOpen} onSubmit={() => submitInventoryAction(exportStock, exportForm, setExportForm, 'Đã ghi nhận xuất')} />
           <InventoryActionModal title="Hủy xuất" icon={RotateCcw} productLabel="Hủy xuất sản phẩm nào" mode="cancel" products={products} shops={shops} values={cancelForm} setValues={setCancelForm} open={cancelPanelOpen} setOpen={setCancelPanelOpen} onSubmit={() => submitInventoryAction(cancelExportStock, cancelForm, setCancelForm, 'Đã ghi nhận hủy xuất')} />
         </main>
@@ -533,18 +526,22 @@ function ProductImage({ product, canEdit, onUpdate, onRemove, compact = false })
 }
 
 function AllocationStrip({ product, shops }) {
-  const allocations = (product.allocations || []).map((allocation) => ({ ...allocation, shop: shops.find((shop) => shop.id === allocation.shopId) })).filter((allocation) => allocation.shop);
+  const soldByShop = Object.entries(product.exportedByShop || {})
+    .map(([shopId, quantity]) => ({ shopId, quantity: Number(quantity || 0), shop: shops.find((shop) => shop.id === shopId) }))
+    .filter((item) => item.shop && item.quantity > 0)
+    .sort((a, b) => b.quantity - a.quantity || a.shop.name.localeCompare(b.shop.name, 'vi', { sensitivity: 'base' }));
   return (
     <div className="flex items-stretch gap-3 overflow-x-auto">
-      {allocations.length ? allocations.map((allocation) => (
-        <div key={allocation.id || allocation.shopId} className="min-w-[160px] rounded-xl border border-slate-200 bg-white p-3">
-          <p className="font-semibold text-slate-950">{allocation.shop.name}</p>
-          <p className="mt-2 text-2xl font-bold">{formatNumber(allocation.quantity)}</p>
+      {soldByShop.length ? soldByShop.map((item) => (
+        <div key={item.shopId} className="min-w-[160px] rounded-xl border border-slate-200 bg-white p-3">
+          <p className="font-semibold text-slate-950">{item.shop.name}</p>
+          <p className="mt-1 text-xs font-semibold text-slate-500">Đã bán</p>
+          <p className="mt-2 text-2xl font-bold">{formatNumber(item.quantity)}</p>
         </div>
-      )) : <p className="text-sm text-slate-500">Chưa phân bổ vào shop nào.</p>}
+      )) : <p className="text-sm text-slate-500">Chưa có shop nào bán sản phẩm này.</p>}
       <div className="ml-auto min-w-[160px] rounded-xl border border-slate-300 bg-slate-950 p-3 text-white">
-        <p className="text-sm">Tổng phân bổ</p>
-        <p className="mt-2 text-2xl font-bold">{formatNumber(product.distributedStock)}</p>
+        <p className="text-sm">Tổng đã bán</p>
+        <p className="mt-2 text-2xl font-bold">{formatNumber(product.soldStock)}</p>
       </div>
     </div>
   );
@@ -563,6 +560,226 @@ function ActivityPanel({ logs, compact = false }) {
       </CardContent>
     </Card>
   );
+}
+
+function SalesStatsPage({ salesStats }) {
+  const [period, setPeriod] = useState('day');
+  const [selectedProductId, setSelectedProductId] = useState('');
+  const [selectedShopId, setSelectedShopId] = useState('');
+  const [selectedShopProductId, setSelectedShopProductId] = useState('');
+  const products = salesStats.productRankings || [];
+  const shops = salesStats.shopRankings || [];
+  const selectedProduct = products.find((product) => product.productId === selectedProductId) || products[0];
+  const selectedShop = shops.find((shop) => shop.shopId === selectedShopId) || shops[0];
+  const shopProducts = selectedShop?.products || [];
+  const selectedShopProduct = shopProducts.find((product) => product.productId === selectedShopProductId) || shopProducts[0];
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-xl font-bold text-slate-950">Thống kê bán hàng</h2>
+          <p className="mt-1 text-sm text-slate-500">Số lượng được tính bằng tổng xuất trừ tổng hủy xuất.</p>
+        </div>
+        <Select className="w-full sm:w-44" value={period} onChange={(event) => setPeriod(event.target.value)}>
+          <option value="day">Theo ngày</option>
+          <option value="week">Theo tuần</option>
+          <option value="month">Theo tháng</option>
+          <option value="year">Theo năm</option>
+        </Select>
+      </div>
+
+      <section className="grid gap-5 xl:grid-cols-[0.8fr_1.2fr]">
+        <RankingPanel
+          emptyText="Chưa có sản phẩm nào được bán."
+          items={products}
+          selectedId={selectedProduct?.productId || ''}
+          title="Danh sách sản phẩm bán chạy nhất"
+          onSelect={(item) => setSelectedProductId(item.productId)}
+          getId={(item) => item.productId}
+          renderTitle={(item) => productOptionLabel({ name: item.productName, size: item.size })}
+          renderMeta={(item) => `SKU: ${item.sku || '-'}`}
+        />
+        <SalesChartCard
+          title={selectedProduct ? productOptionLabel({ name: selectedProduct.productName, size: selectedProduct.size }) : 'Biểu đồ sản phẩm'}
+          subtitle="Lượt bán của sản phẩm"
+          events={salesStats.events || []}
+          period={period}
+          productId={selectedProduct?.productId}
+        />
+      </section>
+
+      <section className="grid gap-5 xl:grid-cols-[0.8fr_1.2fr]">
+        <RankingPanel
+          emptyText="Chưa có shop nào phát sinh bán hàng."
+          items={shops}
+          selectedId={selectedShop?.shopId || ''}
+          title="Danh sách shop có lượt bán nhiều nhất"
+          onSelect={(item) => {
+            setSelectedShopId(item.shopId);
+            setSelectedShopProductId('');
+          }}
+          getId={(item) => item.shopId}
+          renderTitle={(item) => item.shopName}
+          renderMeta={() => 'Tổng đã bán'}
+        />
+        <Card>
+          <CardHeader>
+            <CardTitle>{selectedShop ? `Sản phẩm đã bán tại ${selectedShop.shopName}` : 'Sản phẩm đã bán tại shop'}</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-3 md:grid-cols-2">
+              {shopProducts.map((product) => (
+                <button
+                  key={product.productId}
+                  type="button"
+                  className={`rounded-xl border p-3 text-left transition ${selectedShopProduct?.productId === product.productId ? 'border-slate-950 bg-slate-50' : 'border-slate-200 bg-white hover:bg-slate-50'}`}
+                  onClick={() => setSelectedShopProductId(product.productId)}
+                >
+                  <p className="font-semibold text-slate-950">{productOptionLabel({ name: product.productName, size: product.size })}</p>
+                  <p className="mt-1 text-sm text-slate-500">SKU: {product.sku || '-'}</p>
+                  <p className="mt-2 text-xl font-bold">{formatNumber(product.quantity)}</p>
+                </button>
+              ))}
+              {!shopProducts.length && <p className="text-sm text-slate-500">Shop này chưa bán sản phẩm nào.</p>}
+            </div>
+            <SalesLineChart
+              events={salesStats.events || []}
+              period={period}
+              productId={selectedShopProduct?.productId}
+              shopId={selectedShop?.shopId}
+            />
+          </CardContent>
+        </Card>
+      </section>
+    </div>
+  );
+}
+
+function RankingPanel({ title, items, selectedId, onSelect, getId, renderTitle, renderMeta, emptyText }) {
+  return (
+    <Card>
+      <CardHeader><CardTitle>{title}</CardTitle></CardHeader>
+      <CardContent className="space-y-2">
+        {items.map((item, index) => {
+          const id = getId(item);
+          return (
+            <button
+              key={id}
+              type="button"
+              className={`flex w-full items-center justify-between gap-3 rounded-xl border p-3 text-left transition ${selectedId === id ? 'border-slate-950 bg-slate-50' : 'border-slate-200 bg-white hover:bg-slate-50'}`}
+              onClick={() => onSelect(item)}
+            >
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-slate-400">#{index + 1}</p>
+                <p className="truncate font-semibold text-slate-950">{renderTitle(item)}</p>
+                <p className="text-sm text-slate-500">{renderMeta(item)}</p>
+              </div>
+              <p className="text-2xl font-bold text-slate-950">{formatNumber(item.quantity)}</p>
+            </button>
+          );
+        })}
+        {!items.length && <p className="text-sm text-slate-500">{emptyText}</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
+function SalesChartCard({ title, subtitle, events, period, productId }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+        <p className="text-sm text-slate-500">{subtitle}</p>
+      </CardHeader>
+      <CardContent>
+        <SalesLineChart events={events} period={period} productId={productId} />
+      </CardContent>
+    </Card>
+  );
+}
+
+function SalesLineChart({ events, period, productId, shopId }) {
+  const points = buildSalesSeries(events, { period, productId, shopId });
+  if (!productId || !points.length) {
+    return <div className="grid h-72 place-items-center rounded-xl border border-dashed border-slate-200 text-sm text-slate-500">Chưa có dữ liệu để vẽ biểu đồ.</div>;
+  }
+
+  const width = 720;
+  const height = 280;
+  const padding = 36;
+  const maxValue = Math.max(...points.map((point) => point.value), 1);
+  const xStep = points.length > 1 ? (width - padding * 2) / (points.length - 1) : 0;
+  const coordinates = points.map((point, index) => ({
+    ...point,
+    x: points.length > 1 ? padding + index * xStep : width / 2,
+    y: height - padding - (point.value / maxValue) * (height - padding * 2),
+  }));
+  const path = coordinates.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
+
+  return (
+    <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white p-3">
+      <svg className="min-w-[620px]" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Biểu đồ lượt bán">
+        <line x1={padding} x2={width - padding} y1={height - padding} y2={height - padding} stroke="#cbd5e1" />
+        <line x1={padding} x2={padding} y1={padding} y2={height - padding} stroke="#cbd5e1" />
+        {[0, 0.5, 1].map((ratio) => {
+          const y = height - padding - ratio * (height - padding * 2);
+          return (
+            <g key={ratio}>
+              <line x1={padding} x2={width - padding} y1={y} y2={y} stroke="#e2e8f0" />
+              <text x={8} y={y + 4} fontSize="12" fill="#64748b">{formatNumber(Math.round(maxValue * ratio))}</text>
+            </g>
+          );
+        })}
+        <path d={path} fill="none" stroke="#0f172a" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" />
+        {coordinates.map((point, index) => (
+          <g key={point.key}>
+            <circle cx={point.x} cy={point.y} fill="#0f172a" r="4" />
+            <text x={point.x} y={point.y - 10} textAnchor="middle" fontSize="12" fontWeight="700" fill="#0f172a">{formatNumber(point.value)}</text>
+            {(index === 0 || index === coordinates.length - 1 || coordinates.length <= 6) && (
+              <text x={point.x} y={height - 10} textAnchor="middle" fontSize="11" fill="#64748b">{point.label}</text>
+            )}
+          </g>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+function buildSalesSeries(events, { period, productId, shopId }) {
+  const grouped = new Map();
+  events
+    .filter((event) => event.productId === productId && (!shopId || event.shopId === shopId))
+    .forEach((event) => {
+      const bucket = getPeriodBucket(event.createdAt, period);
+      grouped.set(bucket.key, {
+        key: bucket.key,
+        label: bucket.label,
+        value: (grouped.get(bucket.key)?.value || 0) + Number(event.quantity || 0),
+      });
+    });
+
+  return [...grouped.values()]
+    .filter((point) => point.value > 0)
+    .sort((a, b) => a.key.localeCompare(b.key));
+}
+
+function getPeriodBucket(value, period) {
+  const date = new Date(value);
+  const year = date.getFullYear();
+  if (period === 'year') return { key: String(year), label: String(year) };
+  if (period === 'month') {
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    return { key: `${year}-${month}`, label: `${month}/${year}` };
+  }
+  if (period === 'week') {
+    const firstDay = new Date(year, 0, 1);
+    const week = Math.ceil((((date - firstDay) / 86400000) + firstDay.getDay() + 1) / 7);
+    return { key: `${year}-W${String(week).padStart(2, '0')}`, label: `T${week}/${year}` };
+  }
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return { key: `${year}-${month}-${day}`, label: `${day}/${month}` };
 }
 
 function InventoryActionModal({ title, icon: Icon, productLabel, mode = 'stock', products, shops, values, setValues, open, setOpen, onSubmit }) {
@@ -618,7 +835,7 @@ function InventoryActionModal({ title, icon: Icon, productLabel, mode = 'stock',
   );
 }
 
-function ImportStockPanel({ products, shops, values, setValues, open, setOpen, onSubmit }) {
+function ImportStockPanel({ products, values, setValues, open, setOpen, onSubmit }) {
   const selectedProduct = products.find((product) => product.id === values.productId);
   const productName = selectedProduct ? productOptionLabel(selectedProduct) : values.productName || '';
   const previewImage = values.image || selectedProduct?.image || '';
@@ -627,9 +844,6 @@ function ImportStockPanel({ products, shops, values, setValues, open, setOpen, o
   const factoryReturnDefects = Number(values.factoryReturnDefects || 0);
   const unfixableDefects = Number(values.unfixableDefects || 0);
   const actualImported = Math.max(quantity - factoryReturnDefects - unfixableDefects, 0);
-  const allocated = Object.entries(values.selectedShops || {}).filter(([, selected]) => selected).reduce((sum, [shopId]) => sum + Number(values.shopAllocations?.[shopId] || 0), 0);
-  const hasAllocationMismatch = productName.trim() && quantity > 0 && allocated > actualImported;
-  const selectedWithoutQuantity = Object.entries(values.selectedShops || {}).some(([shopId, selected]) => selected && Number(values.shopAllocations?.[shopId] || 0) <= 0);
 
   if (!open) return null;
 
@@ -660,15 +874,6 @@ function ImportStockPanel({ products, shops, values, setValues, open, setOpen, o
     }));
   }
 
-  function updateShopAllocation(shopId, value) {
-    const quantityValue = value.replace(/\D/g, '');
-    setValues((current) => ({
-      ...current,
-      shopAllocations: { ...(current.shopAllocations || {}), [shopId]: quantityValue },
-      selectedShops: { ...(current.selectedShops || {}), [shopId]: Number(quantityValue || 0) > 0 || Boolean(current.selectedShops?.[shopId]) },
-    }));
-  }
-
   function readImage(file) {
     if (!file) return updateValue('image', '');
     const reader = new FileReader();
@@ -681,11 +886,11 @@ function ImportStockPanel({ products, shops, values, setValues, open, setOpen, o
       <form className="space-y-6 p-5" onSubmit={(event) => { event.preventDefault(); onSubmit().then((success) => { if (success) setOpen(false); }); }}>
         <ModalHeader icon={ArrowDownToLine} title="Nhập kho" onClose={() => setOpen(false)} />
         <div className="grid gap-4 md:grid-cols-5">
-          <Field label="S?n ph?m"><Input data-import-nav="0" onKeyDown={(event) => focusImportField(event, 0)} list="import-products" required value={productName} onChange={(event) => updateProductName(event.target.value)} /><datalist id="import-products">{products.map((product) => <option key={product.id} value={productOptionLabel(product)} />)}</datalist></Field>
+          <Field label="Sản phẩm"><Input data-import-nav="0" onKeyDown={(event) => focusImportField(event, 0)} list="import-products" required value={productName} onChange={(event) => updateProductName(event.target.value)} /><datalist id="import-products">{products.map((product) => <option key={product.id} value={productOptionLabel(product)} />)}</datalist></Field>
           <Field label="SKU"><Input data-import-nav="1" onKeyDown={(event) => focusImportField(event, 1)} value={values.sku} onChange={(event) => updateValue('sku', event.target.value)} /></Field>
-          <Field label="S? lu?ng"><Input data-import-nav="2" onKeyDown={(event) => focusImportField(event, 2)} min="1" required type="number" value={values.quantity} onChange={(event) => updateValue('quantity', event.target.value.replace(/\D/g, ''))} /></Field>
+          <Field label="Số lượng"><Input data-import-nav="2" onKeyDown={(event) => focusImportField(event, 2)} min="1" required type="number" value={values.quantity} onChange={(event) => updateValue('quantity', event.target.value.replace(/\D/g, ''))} /></Field>
           <Field label="Size"><Input data-import-nav="3" onKeyDown={(event) => focusImportField(event, 3)} value={values.size} onChange={(event) => updateValue('size', event.target.value)} /></Field>
-          <Field label="?nh">
+          <Field label="Ảnh">
             <div className="flex items-center gap-3">
               <div className="grid h-12 w-12 flex-none place-items-center overflow-hidden rounded-xl border border-slate-200 bg-white">{previewImage ? <img className="h-full w-full object-cover" src={previewImage} alt={productName} /> : <ImageIcon className="text-slate-400" size={18} />}</div>
               <Input data-import-nav="4" onKeyDown={(event) => focusImportField(event, 4)} accept="image/png,image/jpeg,image/webp" type="file" onChange={(event) => readImage(event.target.files?.[0])} />
@@ -698,19 +903,9 @@ function ImportStockPanel({ products, shops, values, setValues, open, setOpen, o
           <Field label="Không sửa"><Input min="0" type="number" value={values.unfixableDefects} onChange={(event) => updateValue('unfixableDefects', event.target.value.replace(/\D/g, ''))} /></Field>
           <div className="rounded-xl border border-slate-200 bg-slate-50 p-3"><p className="text-sm text-slate-500">Tổng thực tế</p><p className="mt-2 text-xl font-bold">{formatNumber(actualImported)}</p></div>
         </div>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {shops.map((shop) => (
-            <label key={shop.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-              <span className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" checked={Boolean(values.selectedShops?.[shop.id])} onChange={(event) => setValues((current) => ({ ...current, selectedShops: { ...(current.selectedShops || {}), [shop.id]: event.target.checked } }))} />{shop.name}</span>
-              <Input className="mt-3" min="0" type="number" placeholder="Số lượng ở shop" value={values.shopAllocations?.[shop.id] || ''} onChange={(event) => updateShopAllocation(shop.id, event.target.value)} />
-            </label>
-          ))}
-        </div>
-        {hasAllocationMismatch && <AlertMessage error={`T?ng ph�n b? shop l� ${formatNumber(allocated)}, vu?t t?ng th?c t? ${formatNumber(actualImported)}.`} />}
-        {selectedWithoutQuantity && <AlertMessage error="Shop đã tick phải có số lượng lớn hơn 0." />}
         <div className="flex justify-end gap-3 border-t border-slate-200 pt-4">
           <Button type="button" variant="secondary" onClick={() => setOpen(false)}>Hủy</Button>
-          <Button type="submit" disabled={hasAllocationMismatch || selectedWithoutQuantity || fixableDefects + factoryReturnDefects + unfixableDefects > quantity}>Lưu</Button>
+          <Button type="submit" disabled={fixableDefects + factoryReturnDefects + unfixableDefects > quantity}>Lưu</Button>
         </div>
       </form>
     </Modal>
@@ -871,16 +1066,17 @@ function LogDetailModal({ log, onClose }) {
   );
 }
 
-function ShopManager({ shops, products, form, setForm, onSave, onDelete, onRemoveProduct }) {
+function ShopManager({ shops, products, form, setForm, onSave, onDelete }) {
   const [selectedShopId, setSelectedShopId] = useState(shops[0]?.id || '');
   const [formOpen, setFormOpen] = useState(false);
   const selectedShop = shops.find((shop) => shop.id === selectedShopId);
-  const shopProducts = products.flatMap((product) => (product.allocations || [])
-    .filter((allocation) => allocation.shopId === selectedShopId && allocation.quantity > 0)
-    .map((allocation) => ({ ...product, shopQuantity: allocation.quantity })));
+  const shopProducts = products
+    .map((product) => ({ ...product, shopQuantity: Number(product.exportedByShop?.[selectedShopId] || 0) }))
+    .filter((product) => product.shopQuantity > 0)
+    .sort((a, b) => b.shopQuantity - a.shopQuantity || compareProducts(a, b));
   const shopStockById = new Map(shops.map((shop) => [
     shop.id,
-    products.reduce((sum, product) => sum + (product.allocations || []).filter((allocation) => allocation.shopId === shop.id).reduce((itemSum, allocation) => itemSum + Number(allocation.quantity || 0), 0), 0),
+    products.reduce((sum, product) => sum + Number(product.exportedByShop?.[shop.id] || 0), 0),
   ]));
 
   function startEdit(shop) {
@@ -896,7 +1092,7 @@ function ShopManager({ shops, products, form, setForm, onSave, onDelete, onRemov
           <button key={shop.id} type="button" className={`overflow-hidden rounded-xl border bg-white text-left shadow-sm ${selectedShopId === shop.id ? 'border-slate-950' : 'border-slate-200'}`} onClick={() => setSelectedShopId(shop.id)}>
             <div className="grid aspect-[5/2] place-items-center bg-slate-100">{shop.image ? <img className="h-full w-full object-cover" src={shop.image} alt={shop.name} /> : <Store className="text-slate-400" />}</div>
             <div className="flex items-center justify-between gap-3 p-4">
-              <div><p className="font-semibold">{shop.name}</p><p className="text-sm text-slate-500">Tồn shop: {formatNumber(shopStockById.get(shop.id) || 0)}</p></div>
+              <div><p className="font-semibold">{shop.name}</p><p className="text-sm text-slate-500">Đã bán: {formatNumber(shopStockById.get(shop.id) || 0)}</p></div>
               <div className="flex gap-2">
                 <Button className="h-9 px-3" type="button" variant="secondary" onClick={(event) => { event.stopPropagation(); startEdit(shop); }}><Pencil size={16} />Sửa</Button>
                 <Button className="h-9 px-3 border-red-200 text-red-700 hover:bg-red-50" type="button" variant="secondary" onClick={(event) => { event.stopPropagation(); onDelete(shop); }}><Trash2 size={16} />Xóa</Button>
@@ -907,11 +1103,11 @@ function ShopManager({ shops, products, form, setForm, onSave, onDelete, onRemov
       </div>
       {selectedShop && (
         <Card>
-          <CardHeader><CardTitle>Sản phẩm trong {selectedShop.name}</CardTitle></CardHeader>
+          <CardHeader><CardTitle>Sản phẩm đã bán trong {selectedShop.name}</CardTitle></CardHeader>
           <CardContent>
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {shopProducts.map((product) => <ShopProductCard key={product.id} product={product} shop={selectedShop} onRemove={onRemoveProduct} />)}
-              {!shopProducts.length && <p className="text-sm text-slate-500">Shop này chưa có sản phẩm được phân bổ.</p>}
+              {shopProducts.map((product) => <ShopProductCard key={product.id} product={product} />)}
+              {!shopProducts.length && <p className="text-sm text-slate-500">Shop này chưa bán sản phẩm nào.</p>}
             </div>
           </CardContent>
         </Card>
@@ -921,17 +1117,16 @@ function ShopManager({ shops, products, form, setForm, onSave, onDelete, onRemov
   );
 }
 
-function ShopProductCard({ product, shop, onRemove }) {
+function ShopProductCard({ product }) {
   return (
     <div className="flex gap-3 rounded-xl border border-slate-200 bg-white p-3">
       <div className="grid h-20 w-20 flex-none place-items-center overflow-hidden rounded-xl border border-slate-200 bg-slate-50">{product.image ? <img className="max-h-full max-w-full object-contain" src={product.image} alt={product.name} /> : <Boxes className="text-slate-400" />}</div>
       <div className="min-w-0 flex-1 text-sm">
         <p className="font-semibold text-slate-950">{product.name}</p>
         <p className="text-slate-500">SKU: {product.sku}</p>
-        <p>Số lượng: {formatNumber(product.shopQuantity)}</p>
+        <p>Đã bán: {formatNumber(product.shopQuantity)}</p>
         <p>Size: {product.size || '-'}</p>
       </div>
-      <Button className="h-9 px-3 border-red-200 text-red-700 hover:bg-red-50" type="button" variant="secondary" onClick={() => onRemove(shop, product)}><Trash2 size={16} />Xóa</Button>
     </div>
   );
 }
