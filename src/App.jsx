@@ -579,7 +579,6 @@ function SalesStatsPage({ salesStats }) {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-xl font-bold text-slate-950">Thống kê bán hàng</h2>
-          <p className="mt-1 text-sm text-slate-500">Số lượng được tính bằng tổng xuất trừ tổng hủy xuất.</p>
         </div>
         <Select className="w-full sm:w-44" value={period} onChange={(event) => setPeriod(event.target.value)}>
           <option value="day">Theo ngày</option>
